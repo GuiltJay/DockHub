@@ -1,0 +1,84 @@
+name: Build & Publish Docker Images
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: crawl4ai-playwright-base
+            path: docker/crawl4ai-playwright
+          - name: crawl4ai-chromium
+            path: docker/crawl4ai-chromium
+          - name: crawl4ai-stealth
+            path: docker/crawl4ai-stealth
+          - name: crawl4ai-fastapi
+            path: docker/crawl4ai-fastapi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set owner lowercase
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+      - name: Set image name
+        run: |
+          echo "IMAGE=${REGISTRY}/${OWNER}/${{ matrix.image.name }}" >> $GITHUB_ENV
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          START=$(date +%s)
+
+          docker build \
+            -t $IMAGE:latest \
+            -t $IMAGE:${{ github.sha }} \
+            ${{ matrix.image.path }}
+
+          END=$(date +%s)
+          echo "BUILD_TIME=$((END - START))" >> $GITHUB_ENV
+
+      - name: Push image
+        run: |
+          docker push $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+
+      - name: Get image size
+        run: |
+          SIZE=$(docker image inspect $IMAGE:latest --format='{{.Size}}')
+          SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+          echo "IMAGE_SIZE=${SIZE_MB} MB" >> $GITHUB_ENV
+
+      - name: Append README entry
+        run: |
+          DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+
+          echo "| ${{ matrix.image.name }} | \`$IMAGE:latest\` | ${IMAGE_SIZE} | ${BUILD_TIME}s | ${DATE} |" >> README.md
+
+      - name: Commit README
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add README.md
+          git commit -m "chore: update image metadata (${{ matrix.image.name }})" || true
+          git push
