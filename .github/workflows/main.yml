@@ -1,8 +1,8 @@
-name: Build & Publish Docker Images
+name: Docker Image Factory
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 env:
@@ -16,28 +16,13 @@ jobs:
       contents: write
       packages: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - name: crawl4ai-playwright-base
-            path: docker/crawl4ai-playwright
-          - name: crawl4ai-chromium
-            path: docker/crawl4ai-chromium
-          - name: crawl4ai-stealth
-            path: docker/crawl4ai-stealth
-          - name: crawl4ai-fastapi
-            path: docker/crawl4ai-fastapi
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set owner lowercase
-        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
-
-      - name: Set image name
+      - name: Set lowercase owner
         run: |
-          echo "IMAGE=${REGISTRY}/${OWNER}/${{ matrix.image.name }}" >> $GITHUB_ENV
+          echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -46,39 +31,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
+      - name: Initialize README
         run: |
-          START=$(date +%s)
+          printf "# 🐳 Docker Image Factory\n\n" > README.md
+          printf "Central repository that builds and publishes Docker images for all projects.\n\n" >> README.md
+          printf "## 📦 Published Images\n\n" >> README.md
+          printf "| Image | Pull Command | Size | Build Time | Last Build |\n" >> README.md
+          printf "|------|--------------|------|-----------|-----------|\n" >> README.md
 
-          docker build \
-            -t $IMAGE:latest \
-            -t $IMAGE:${{ github.sha }} \
-            ${{ matrix.image.path }}
-
-          END=$(date +%s)
-          echo "BUILD_TIME=$((END - START))" >> $GITHUB_ENV
-
-      - name: Push image
+      - name: Build and publish images
+        shell: bash
         run: |
-          docker push $IMAGE:latest
-          docker push $IMAGE:${{ github.sha }}
+          set -euo pipefail
 
-      - name: Get image size
-        run: |
-          SIZE=$(docker image inspect $IMAGE:latest --format='{{.Size}}')
-          SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-          echo "IMAGE_SIZE=${SIZE_MB} MB" >> $GITHUB_ENV
+          for dir in images/*; do
+            if [ ! -f "$dir/Dockerfile" ]; then
+              continue
+            fi
 
-      - name: Append README entry
-        run: |
-          DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+            IMAGE_NAME=$(basename "$dir")
+            IMAGE="$REGISTRY/$OWNER/$IMAGE_NAME"
 
-          echo "| ${{ matrix.image.name }} | \`$IMAGE:latest\` | ${IMAGE_SIZE} | ${BUILD_TIME}s | ${DATE} |" >> README.md
+            echo "🔨 Building $IMAGE"
+
+            START=$(date +%s)
+
+            docker build \
+              -t "$IMAGE:latest" \
+              -t "$IMAGE:${{ github.sha }}" \
+              "$dir"
+
+            docker push "$IMAGE:latest"
+            docker push "$IMAGE:${{ github.sha }}"
+
+            END=$(date +%s)
+            BUILD_TIME=$((END - START))
+
+            SIZE_BYTES=$(docker image inspect "$IMAGE:latest" --format='{{.Size}}')
+            SIZE_HUMAN=$(numfmt --to=iec --suffix=B "$SIZE_BYTES")
+
+            DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+
+            printf "| %s | docker pull %s:latest | %s | %ss | %s |\n" \
+              "$IMAGE_NAME" "$IMAGE" "$SIZE_HUMAN" "$BUILD_TIME" "$DATE" >> README.md
+          done
 
       - name: Commit README
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add README.md
-          git commit -m "chore: update image metadata (${{ matrix.image.name }})" || true
+          git commit -m "chore: update docker image registry [auto]" || true
           git push
