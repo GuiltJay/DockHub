@@ -2,7 +2,10 @@ name: Docker Image Factory
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+    paths:
+      - "images/**"
   workflow_dispatch:
 
 env:
